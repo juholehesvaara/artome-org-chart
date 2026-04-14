@@ -970,12 +970,41 @@ function OrgChart({ state, dispatch }) {
     return deptOk && locOk;
   }, [state.departmentFilter, state.locationFilter]);
 
+  // Compute the set of visible node + pill IDs under the current filter.
+  // Start from matching people and propagate upward through pills so that
+  // country + department groupings that contain matches stay visible.
+  const visibleIds = useMemo(() => {
+    const set = new Set();
+    if (!filterActive) return set;
+    Object.values(nodes).forEach(n => {
+      if (isNodeMatching(n)) set.add(n.id);
+    });
+    let changed = true;
+    while (changed) {
+      changed = false;
+      links.forEach(l => {
+        if (set.has(l.target) && !set.has(l.source) &&
+            (countryGroupIds.has(l.source) || deptGroupIds.has(l.source))) {
+          set.add(l.source);
+          changed = true;
+        }
+      });
+    }
+    return set;
+  }, [filterActive, nodes, links, countryGroupIds, deptGroupIds, isNodeMatching]);
+
   // Center and fit view — uses filter-matching nodes when a filter is active
   const fitView = useCallback(() => {
     if (!containerRef.current) return;
-    let positionsToFit = Object.values(nodes)
-      .filter(n => positions[n.id] && (!filterActive || isNodeMatching(n)))
-      .map(n => positions[n.id]);
+    let positionsToFit;
+    if (filterActive) {
+      // Include people that match + pill nodes in visibleIds for a nice framed view
+      const ids = new Set([...visibleIds]);
+      Object.values(nodes).forEach(n => { if (isNodeMatching(n)) ids.add(n.id); });
+      positionsToFit = [...ids].map(id => positions[id]).filter(Boolean);
+    } else {
+      positionsToFit = Object.values(positions);
+    }
     if (positionsToFit.length === 0) positionsToFit = Object.values(positions);
     if (positionsToFit.length === 0) return;
     const nodeW = 220, nodeH = 90, pad = 80;
@@ -995,7 +1024,7 @@ function OrgChart({ state, dispatch }) {
     const cy = rect.height / 2 - boundsCenterY * fitZoom;
     dispatch({ type: 'SET_ZOOM', zoom: fitZoom });
     dispatch({ type: 'SET_PAN', pan: { x: cx, y: cy } });
-  }, [nodes, positions, offsetX, offsetY, filterActive, isNodeMatching]);
+  }, [nodes, positions, offsetX, offsetY, filterActive, isNodeMatching, visibleIds]);
 
   const lastScenarioRef = useRef(null);
   useEffect(() => {
@@ -1036,8 +1065,8 @@ function OrgChart({ state, dispatch }) {
             const ty = l.ty + offsetY;
             const my = (sy + ty) / 2;
             const isGroupLink = isSourceCountryGroup || isTargetCountryGroup || isSourceDeptGroup || isTargetDeptGroup;
-            // Hide links when a filter is active — endpoints may be hidden or irrelevant
-            const hidden = filterActive;
+            // When a filter is active, only show links where both endpoints are visible
+            const hidden = filterActive && (!visibleIds.has(l.source) || !visibleIds.has(l.target));
             return (
               <path key={i}
                     d={`M${sx},${sy} C${sx},${my} ${tx},${my} ${tx},${ty}`}
@@ -1055,8 +1084,9 @@ function OrgChart({ state, dispatch }) {
           const flag = COUNTRY_FLAGS[loc] || '\u{1F3E2}';
           const colors = COUNTRY_ZONE_COLORS[loc] || DEFAULT_ZONE_COLOR;
           const pos = positions[groupId];
+          const hidePill = filterActive && !visibleIds.has(groupId);
           return (
-            <div key={groupId} className={`pill-group${filterActive ? ' hidden' : ''}`} style={{
+            <div key={groupId} className={`pill-group${hidePill ? ' hidden' : ''}`} style={{
               position: 'absolute',
               left: pos.x + offsetX - 75,
               top: pos.y + offsetY,
@@ -1080,9 +1110,8 @@ function OrgChart({ state, dispatch }) {
           const dept = parts.slice(3).join(':');
           const color = DEPT_COLORS[dept] || '#999';
           const pos = positions[groupId];
-          // Hide the dept pill if it doesn't match the active filter
-          const deptFilterMatch = state.departmentFilter === 'All' || state.departmentFilter === dept;
-          const hidePill = filterActive && !deptFilterMatch;
+          // Hide dept pill if not in the visible set under active filter
+          const hidePill = filterActive && !visibleIds.has(groupId);
           return (
             <div key={groupId} className={`pill-group${hidePill ? ' hidden' : ''}`} style={{
               position: 'absolute',
