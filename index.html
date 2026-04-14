@@ -501,11 +501,12 @@ function reducer(state, action) {
 // ─── Tree Layout ────────────────────────────────────────
 function computeTreeLayout(nodes, collapsedNodes, groupByCountry = false) {
   const nodeList = Object.values(nodes);
-  if (nodeList.length === 0) return { positions: {}, links: [], rootId: null, countryGroupIds: new Set() };
+  if (nodeList.length === 0) return { positions: {}, links: [], rootId: null, countryGroupIds: new Set(), deptGroupIds: new Set() };
   const root = nodeList.find(n => !n.parentId);
-  if (!root) return { positions: {}, links: [], rootId: null, countryGroupIds: new Set() };
+  if (!root) return { positions: {}, links: [], rootId: null, countryGroupIds: new Set(), deptGroupIds: new Set() };
 
   const countryGroupIds = new Set();
+  const deptGroupIds = new Set();
 
   // Build hierarchy data, respecting collapsed nodes
   function buildChildren(parentId) {
@@ -528,11 +529,36 @@ function computeTreeLayout(nodes, collapsedNodes, groupByCountry = false) {
         return locations.map(loc => {
           const groupId = `country:${parentId}:${loc}`;
           countryGroupIds.add(groupId);
-          const groupChildren = byLoc[loc].map(c => ({
-            id: c.id,
-            children: buildChildren(c.id)
-          }));
-          // If only one child in this country group, still wrap it
+
+          // Further group by department within each country
+          const byDept = {};
+          byLoc[loc].forEach(c => {
+            const dept = c.department || 'Other';
+            if (!byDept[dept]) byDept[dept] = [];
+            byDept[dept].push(c);
+          });
+          const depts = Object.keys(byDept).sort((a, b) => byDept[b].length - byDept[a].length);
+
+          let groupChildren;
+          if (depts.length >= 2) {
+            // Multiple departments: insert dept group nodes
+            groupChildren = depts.map(dept => {
+              const deptId = `dept:${parentId}:${loc}:${dept}`;
+              deptGroupIds.add(deptId);
+              const deptChildren = byDept[dept].map(c => ({
+                id: c.id,
+                children: buildChildren(c.id)
+              }));
+              return { id: deptId, children: deptChildren };
+            });
+          } else {
+            // Single department: skip dept layer
+            groupChildren = byLoc[loc].map(c => ({
+              id: c.id,
+              children: buildChildren(c.id)
+            }));
+          }
+
           return { id: groupId, children: groupChildren };
         });
       }
@@ -543,7 +569,7 @@ function computeTreeLayout(nodes, collapsedNodes, groupByCountry = false) {
 
   const hierarchyData = { id: root.id, children: buildChildren(root.id) };
   const rootNode = d3.hierarchy(hierarchyData);
-  const treeLayout = d3.tree().nodeSize([230, groupByCountry ? 120 : 140]);
+  const treeLayout = d3.tree().nodeSize([230, groupByCountry ? 110 : 140]);
   treeLayout(rootNode);
 
   const positions = {};
@@ -554,7 +580,7 @@ function computeTreeLayout(nodes, collapsedNodes, groupByCountry = false) {
                   sx: l.source.x, sy: l.source.y, tx: l.target.x, ty: l.target.y });
   });
 
-  return { positions, links, rootId: root.id, countryGroupIds };
+  return { positions, links, rootId: root.id, countryGroupIds, deptGroupIds };
 }
 
 function getDescendantCount(nodes, nodeId) {
@@ -824,7 +850,7 @@ function OrgChart({ state, dispatch }) {
 
   const activeScenario = state.scenarios[state.activeScenarioId];
   const nodes = activeScenario.nodes;
-  const { positions, links, countryGroupIds } = useMemo(
+  const { positions, links, countryGroupIds, deptGroupIds } = useMemo(
     () => computeTreeLayout(nodes, state.collapsedNodes, state.showCountryZones),
     [nodes, state.collapsedNodes, state.showCountryZones]
   );
@@ -833,6 +859,7 @@ function OrgChart({ state, dispatch }) {
   const visibleNodes = Object.values(nodes).filter(n => positions[n.id]);
   // Country group node IDs that have positions
   const visibleCountryGroups = [...countryGroupIds].filter(id => positions[id]);
+  const visibleDeptGroups = [...deptGroupIds].filter(id => positions[id]);
 
   // Compute canvas bounds
   const allPos = Object.values(positions);
@@ -913,14 +940,18 @@ function OrgChart({ state, dispatch }) {
             const sx = l.sx + offsetX;
             const isSourceCountryGroup = countryGroupIds.has(l.source);
             const isTargetCountryGroup = countryGroupIds.has(l.target);
-            const sy = l.sy + offsetY + (isSourceCountryGroup ? 36 : 82);
+            const isSourceDeptGroup = deptGroupIds.has(l.source);
+            const isTargetDeptGroup = deptGroupIds.has(l.target);
+            const isGroupNode = isSourceCountryGroup || isSourceDeptGroup;
+            const sy = l.sy + offsetY + (isGroupNode ? 36 : 82);
             const tx = l.tx + offsetX;
             const ty = l.ty + offsetY;
             const my = (sy + ty) / 2;
+            const isGroupLink = isSourceCountryGroup || isTargetCountryGroup || isSourceDeptGroup || isTargetDeptGroup;
             return (
               <path key={i}
                     d={`M${sx},${sy} C${sx},${my} ${tx},${my} ${tx},${ty}`}
-                    fill="none" stroke={isSourceCountryGroup || isTargetCountryGroup ? '#b0b8c4' : '#D9D9D9'} strokeWidth="1.5" />
+                    fill="none" stroke={isGroupLink ? '#b0b8c4' : '#D9D9D9'} strokeWidth="1.5" />
             );
           })}
         </svg>
@@ -947,6 +978,31 @@ function OrgChart({ state, dispatch }) {
             }}>
               <span style={{ fontSize: 15 }}>{flag}</span>
               <span style={{ fontSize: 12, fontWeight: 800, color: 'rgba(0,0,0,0.5)' }}>{loc}</span>
+            </div>
+          );
+        })}
+
+        {/* Department group nodes */}
+        {visibleDeptGroups.map(groupId => {
+          // groupId format: "dept:parentId:Location:Department"
+          const parts = groupId.split(':');
+          const dept = parts.slice(3).join(':');
+          const color = DEPT_COLORS[dept] || '#999';
+          const pos = positions[groupId];
+          return (
+            <div key={groupId} style={{
+              position: 'absolute',
+              left: pos.x + offsetX - 70,
+              top: pos.y + offsetY,
+              width: 140, height: 36,
+              background: color + '12',
+              border: `1.5px solid ${color}40`,
+              borderRadius: 18,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              gap: 6, pointerEvents: 'none', zIndex: 2,
+            }}>
+              <span className="dept-dot" style={{ background: color, width: 10, height: 10, borderRadius: '50%', flexShrink: 0 }}></span>
+              <span style={{ fontSize: 11, fontWeight: 800, color: color, opacity: 0.8 }}>{dept}</span>
             </div>
           );
         })}
