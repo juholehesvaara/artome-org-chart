@@ -887,7 +887,11 @@ function OrgChart({ state, dispatch }) {
 
   // Pan
   const handleMouseDown = (e) => {
-    if (e.target === containerRef.current || e.target.tagName === 'svg' || e.target.tagName === 'path') {
+    // Allow panning from any background area — exclude interactive elements (nodes, buttons, inputs)
+    const tag = e.target.tagName.toLowerCase();
+    const isInteractive = tag === 'button' || tag === 'input' || tag === 'select' || tag === 'textarea' || tag === 'a';
+    const isNode = e.target.closest && e.target.closest('[draggable="true"], .modal-overlay, .modal-content');
+    if (!isInteractive && !isNode) {
       isPanning.current = true;
       lastMouse.current = { x: e.clientX, y: e.clientY };
       dispatch({ type: 'SET_SELECTED', id: null });
