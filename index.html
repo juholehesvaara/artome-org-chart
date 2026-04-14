@@ -558,8 +558,9 @@ function computeTreeLayout(nodes, collapsedNodes, groupByCountry = false) {
       });
       const locations = Object.keys(byLoc).sort((a, b) => byLoc[b].length - byLoc[a].length);
 
-      // Only insert country groups if there are 2+ children total
-      if (children.length >= 2) {
+      // Only insert country groups if reports span 2+ countries.
+      // (If everyone reports from one country, adding a single-country pill is noise.)
+      if (children.length >= 2 && locations.length >= 2) {
         return locations.map(loc => {
           const groupId = `country:${parentId}:${loc}`;
           countryGroupIds.add(groupId);
