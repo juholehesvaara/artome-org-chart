@@ -96,15 +96,33 @@
   .org-node {
     position: absolute; width: 210px; background: var(--white);
     border-radius: 8px; box-shadow: var(--shadow); cursor: grab;
-    transition: box-shadow 0.15s, border-color 0.15s;
+    transition: box-shadow 0.15s, border-color 0.15s,
+                left 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+                top 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+                opacity 0.4s ease, transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
     border: 2px solid transparent; user-select: none;
+    transform-origin: center center;
   }
   .org-node:hover { box-shadow: var(--shadow-lg); }
   .org-node.selected { border-color: var(--orange); }
   .org-node.drag-over { border-color: var(--orange); border-style: dashed; }
   .org-node.dragging { opacity: 0.5; }
-  .org-node.dimmed { opacity: 0.2; pointer-events: none; }
+  .org-node.dimmed { opacity: 0; pointer-events: none; transform: scale(0.85); }
   .org-node.highlighted { border-color: var(--orange); box-shadow: 0 0 0 3px rgba(236,170,29,0.3); }
+  .pill-group {
+    transition: left 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+                top 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+                opacity 0.4s ease, transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+    transform-origin: center center;
+  }
+  .pill-group.hidden { opacity: 0; pointer-events: none; transform: scale(0.85); }
+  .canvas-root {
+    transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .canvas-root.no-animate { transition: none; }
+  svg.tree-links path {
+    transition: opacity 0.4s ease, d 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  }
 
   .node-header {
     padding: 10px 12px 6px; display: flex; align-items: flex-start; gap: 8px;
@@ -944,20 +962,41 @@ function OrgChart({ state, dispatch }) {
   };
   const handleMouseUp = () => { isPanning.current = false; };
 
-  // Center and fit view on scenario change
+  // Compute filter state
+  const filterActive = state.departmentFilter !== 'All' || state.locationFilter !== 'All';
+  const isNodeMatching = useCallback((n) => {
+    const deptOk = state.departmentFilter === 'All' || n.department === state.departmentFilter;
+    const locOk = state.locationFilter === 'All' || n.location === state.locationFilter;
+    return deptOk && locOk;
+  }, [state.departmentFilter, state.locationFilter]);
+
+  // Center and fit view — uses filter-matching nodes when a filter is active
   const fitView = useCallback(() => {
-    if (containerRef.current && allPos.length > 0) {
-      const rect = containerRef.current.getBoundingClientRect();
-      const scaleX = (rect.width - 40) / canvasW;
-      const scaleY = (rect.height - 40) / canvasH;
-      const fitZoom = Math.min(scaleX, scaleY, 1);
-      const clampedZoom = Math.max(0.35, Math.min(1, fitZoom));
-      const cx = (rect.width - canvasW * clampedZoom) / 2;
-      const cy = 20;
-      dispatch({ type: 'SET_ZOOM', zoom: clampedZoom });
-      dispatch({ type: 'SET_PAN', pan: { x: cx, y: cy } });
-    }
-  }, [allPos.length, canvasW, canvasH]);
+    if (!containerRef.current) return;
+    let positionsToFit = Object.values(nodes)
+      .filter(n => positions[n.id] && (!filterActive || isNodeMatching(n)))
+      .map(n => positions[n.id]);
+    if (positionsToFit.length === 0) positionsToFit = Object.values(positions);
+    if (positionsToFit.length === 0) return;
+    const nodeW = 220, nodeH = 90, pad = 80;
+    const minPX = Math.min(...positionsToFit.map(p => p.x)) - nodeW/2 - pad;
+    const maxPX = Math.max(...positionsToFit.map(p => p.x)) + nodeW/2 + pad;
+    const minPY = Math.min(...positionsToFit.map(p => p.y)) - pad;
+    const maxPY = Math.max(...positionsToFit.map(p => p.y)) + nodeH + pad;
+    const boundsW = maxPX - minPX;
+    const boundsH = maxPY - minPY;
+    const rect = containerRef.current.getBoundingClientRect();
+    const scaleX = rect.width / boundsW;
+    const scaleY = rect.height / boundsH;
+    const fitZoom = Math.max(0.35, Math.min(1.1, Math.min(scaleX, scaleY)));
+    const boundsCenterX = (minPX + maxPX) / 2 + offsetX;
+    const boundsCenterY = (minPY + maxPY) / 2 + offsetY;
+    const cx = rect.width / 2 - boundsCenterX * fitZoom;
+    const cy = rect.height / 2 - boundsCenterY * fitZoom;
+    dispatch({ type: 'SET_ZOOM', zoom: fitZoom });
+    dispatch({ type: 'SET_PAN', pan: { x: cx, y: cy } });
+  }, [nodes, positions, offsetX, offsetY, filterActive, isNodeMatching]);
+
   const lastScenarioRef = useRef(null);
   useEffect(() => {
     if (lastScenarioRef.current !== state.activeScenarioId) {
@@ -966,18 +1005,25 @@ function OrgChart({ state, dispatch }) {
     }
   }, [state.activeScenarioId, fitView]);
 
+  // Animate to fit when filters change
+  useEffect(() => {
+    requestAnimationFrame(fitView);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.departmentFilter, state.locationFilter]);
+
   return (
     <div ref={containerRef}
          style={{ flex: 1, overflow: 'hidden', cursor: isPanning.current ? 'grabbing' : 'grab', position: 'relative' }}
          onMouseDown={handleMouseDown} onMouseMove={handleMouseMove}
          onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
-      <div style={{
+      <div className={`canvas-root${isPanning.current ? ' no-animate' : ''}`}
+           style={{
         transform: `translate(${state.pan.x}px, ${state.pan.y}px) scale(${state.zoom})`,
         transformOrigin: '0 0', position: 'relative',
         width: canvasW, height: canvasH,
       }}>
         {/* SVG Lines */}
-        <svg style={{ position: 'absolute', top: 0, left: 0, width: canvasW, height: canvasH, pointerEvents: 'none', zIndex: 1 }}>
+        <svg className="tree-links" style={{ position: 'absolute', top: 0, left: 0, width: canvasW, height: canvasH, pointerEvents: 'none', zIndex: 1 }}>
           {links.map((l, i) => {
             const sx = l.sx + offsetX;
             const isSourceCountryGroup = countryGroupIds.has(l.source);
@@ -990,10 +1036,13 @@ function OrgChart({ state, dispatch }) {
             const ty = l.ty + offsetY;
             const my = (sy + ty) / 2;
             const isGroupLink = isSourceCountryGroup || isTargetCountryGroup || isSourceDeptGroup || isTargetDeptGroup;
+            // Hide links when a filter is active — endpoints may be hidden or irrelevant
+            const hidden = filterActive;
             return (
               <path key={i}
                     d={`M${sx},${sy} C${sx},${my} ${tx},${my} ${tx},${ty}`}
-                    fill="none" stroke={isGroupLink ? '#b0b8c4' : '#D9D9D9'} strokeWidth="1.5" />
+                    fill="none" stroke={isGroupLink ? '#b0b8c4' : '#D9D9D9'} strokeWidth="1.5"
+                    opacity={hidden ? 0 : 1} />
             );
           })}
         </svg>
@@ -1007,7 +1056,7 @@ function OrgChart({ state, dispatch }) {
           const colors = COUNTRY_ZONE_COLORS[loc] || DEFAULT_ZONE_COLOR;
           const pos = positions[groupId];
           return (
-            <div key={groupId} style={{
+            <div key={groupId} className={`pill-group${filterActive ? ' hidden' : ''}`} style={{
               position: 'absolute',
               left: pos.x + offsetX - 75,
               top: pos.y + offsetY,
@@ -1031,8 +1080,11 @@ function OrgChart({ state, dispatch }) {
           const dept = parts.slice(3).join(':');
           const color = DEPT_COLORS[dept] || '#999';
           const pos = positions[groupId];
+          // Hide the dept pill if it doesn't match the active filter
+          const deptFilterMatch = state.departmentFilter === 'All' || state.departmentFilter === dept;
+          const hidePill = filterActive && !deptFilterMatch;
           return (
-            <div key={groupId} style={{
+            <div key={groupId} className={`pill-group${hidePill ? ' hidden' : ''}`} style={{
               position: 'absolute',
               left: pos.x + offsetX - 70,
               top: pos.y + offsetY,
