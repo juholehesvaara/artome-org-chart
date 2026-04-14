@@ -499,23 +499,51 @@ function reducer(state, action) {
 }
 
 // ─── Tree Layout ────────────────────────────────────────
-function computeTreeLayout(nodes, collapsedNodes) {
+function computeTreeLayout(nodes, collapsedNodes, groupByCountry = false) {
   const nodeList = Object.values(nodes);
-  if (nodeList.length === 0) return { positions: {}, links: [], rootId: null };
+  if (nodeList.length === 0) return { positions: {}, links: [], rootId: null, countryGroupIds: new Set() };
   const root = nodeList.find(n => !n.parentId);
-  if (!root) return { positions: {}, links: [], rootId: null };
+  if (!root) return { positions: {}, links: [], rootId: null, countryGroupIds: new Set() };
+
+  const countryGroupIds = new Set();
 
   // Build hierarchy data, respecting collapsed nodes
   function buildChildren(parentId) {
     if (collapsedNodes.has(parentId)) return undefined;
     const children = nodeList.filter(n => n.parentId === parentId);
     if (children.length === 0) return undefined;
+
+    if (groupByCountry && children.length > 0) {
+      // Group children by location
+      const byLoc = {};
+      children.forEach(c => {
+        const loc = c.location || 'Other';
+        if (!byLoc[loc]) byLoc[loc] = [];
+        byLoc[loc].push(c);
+      });
+      const locations = Object.keys(byLoc).sort((a, b) => byLoc[b].length - byLoc[a].length);
+
+      // Only insert country groups if there are 2+ children total
+      if (children.length >= 2) {
+        return locations.map(loc => {
+          const groupId = `country:${parentId}:${loc}`;
+          countryGroupIds.add(groupId);
+          const groupChildren = byLoc[loc].map(c => ({
+            id: c.id,
+            children: buildChildren(c.id)
+          }));
+          // If only one child in this country group, still wrap it
+          return { id: groupId, children: groupChildren };
+        });
+      }
+    }
+
     return children.map(c => ({ id: c.id, children: buildChildren(c.id) }));
   }
 
   const hierarchyData = { id: root.id, children: buildChildren(root.id) };
   const rootNode = d3.hierarchy(hierarchyData);
-  const treeLayout = d3.tree().nodeSize([230, 140]);
+  const treeLayout = d3.tree().nodeSize([230, groupByCountry ? 120 : 140]);
   treeLayout(rootNode);
 
   const positions = {};
@@ -526,7 +554,7 @@ function computeTreeLayout(nodes, collapsedNodes) {
                   sx: l.source.x, sy: l.source.y, tx: l.target.x, ty: l.target.y });
   });
 
-  return { positions, links, rootId: root.id };
+  return { positions, links, rootId: root.id, countryGroupIds };
 }
 
 function getDescendantCount(nodes, nodeId) {
@@ -796,13 +824,15 @@ function OrgChart({ state, dispatch }) {
 
   const activeScenario = state.scenarios[state.activeScenarioId];
   const nodes = activeScenario.nodes;
-  const { positions, links } = useMemo(
-    () => computeTreeLayout(nodes, state.collapsedNodes),
-    [nodes, state.collapsedNodes]
+  const { positions, links, countryGroupIds } = useMemo(
+    () => computeTreeLayout(nodes, state.collapsedNodes, state.showCountryZones),
+    [nodes, state.collapsedNodes, state.showCountryZones]
   );
 
   // Visible nodes (those with positions)
   const visibleNodes = Object.values(nodes).filter(n => positions[n.id]);
+  // Country group node IDs that have positions
+  const visibleCountryGroups = [...countryGroupIds].filter(id => positions[id]);
 
   // Compute canvas bounds
   const allPos = Object.values(positions);
@@ -877,53 +907,49 @@ function OrgChart({ state, dispatch }) {
         transformOrigin: '0 0', position: 'relative',
         width: canvasW, height: canvasH,
       }}>
-        {/* Country zones */}
-        {state.showCountryZones && (() => {
-          const zones = computeCountryZones(nodes, positions, offsetX, offsetY);
-          return Object.entries(zones).map(([loc, z]) => {
-            const colors = COUNTRY_ZONE_COLORS[loc] || DEFAULT_ZONE_COLOR;
-            const flag = COUNTRY_FLAGS[loc] || '\u{1F3E2}';
-            return (
-              <div key={`zone-${loc}`} style={{
-                position: 'absolute',
-                left: z.minX, top: z.minY,
-                width: z.maxX - z.minX, height: z.maxY - z.minY,
-                background: colors.bg,
-                border: `1.5px dashed ${colors.border}`,
-                borderRadius: 12,
-                pointerEvents: 'none',
-                zIndex: 0,
-              }}>
-                <div style={{
-                  position: 'absolute', top: 6, left: 10,
-                  display: 'flex', alignItems: 'center', gap: 5,
-                  fontSize: 11, fontWeight: 800, color: 'rgba(0,0,0,0.35)',
-                  letterSpacing: 0.3,
-                }}>
-                  <span style={{ fontSize: 14 }}>{flag}</span>
-                  <span>{loc}</span>
-                  <span style={{ fontWeight: 600, fontSize: 10, opacity: 0.7 }}>({z.count})</span>
-                </div>
-              </div>
-            );
-          });
-        })()}
-
         {/* SVG Lines */}
         <svg style={{ position: 'absolute', top: 0, left: 0, width: canvasW, height: canvasH, pointerEvents: 'none', zIndex: 1 }}>
           {links.map((l, i) => {
             const sx = l.sx + offsetX;
-            const sy = l.sy + offsetY + 82;
+            const isSourceCountryGroup = countryGroupIds.has(l.source);
+            const isTargetCountryGroup = countryGroupIds.has(l.target);
+            const sy = l.sy + offsetY + (isSourceCountryGroup ? 36 : 82);
             const tx = l.tx + offsetX;
             const ty = l.ty + offsetY;
             const my = (sy + ty) / 2;
             return (
               <path key={i}
                     d={`M${sx},${sy} C${sx},${my} ${tx},${my} ${tx},${ty}`}
-                    fill="none" stroke="#D9D9D9" strokeWidth="1.5" />
+                    fill="none" stroke={isSourceCountryGroup || isTargetCountryGroup ? '#b0b8c4' : '#D9D9D9'} strokeWidth="1.5" />
             );
           })}
         </svg>
+
+        {/* Country group nodes */}
+        {visibleCountryGroups.map(groupId => {
+          // groupId format: "country:parentId:Location"
+          const parts = groupId.split(':');
+          const loc = parts.slice(2).join(':');
+          const flag = COUNTRY_FLAGS[loc] || '\u{1F3E2}';
+          const colors = COUNTRY_ZONE_COLORS[loc] || DEFAULT_ZONE_COLOR;
+          const pos = positions[groupId];
+          return (
+            <div key={groupId} style={{
+              position: 'absolute',
+              left: pos.x + offsetX - 75,
+              top: pos.y + offsetY,
+              width: 150, height: 36,
+              background: colors.bg,
+              border: `1.5px solid ${colors.border}`,
+              borderRadius: 18,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              gap: 6, pointerEvents: 'none', zIndex: 2,
+            }}>
+              <span style={{ fontSize: 15 }}>{flag}</span>
+              <span style={{ fontSize: 12, fontWeight: 800, color: 'rgba(0,0,0,0.5)' }}>{loc}</span>
+            </div>
+          );
+        })}
 
         {/* Nodes */}
         {visibleNodes.map(node => (
@@ -1408,8 +1434,8 @@ function App() {
           {state.viewMode === 'hierarchy' && (
             <button className={`btn btn-sm ${state.showCountryZones ? 'btn-primary' : 'btn-secondary'}`}
                     onClick={() => dispatch({ type: 'TOGGLE_COUNTRY_ZONES' })}
-                    title="Show country zones overlay">
-              {COUNTRY_FLAGS['Finland']} Zones
+                    title="Group reports by country in the tree">
+              {COUNTRY_FLAGS['Finland']} By Country
             </button>
           )}
           <div style={{ width: 1, height: 20, background: '#D9D9D9' }}></div>
