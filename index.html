@@ -569,8 +569,28 @@ function computeTreeLayout(nodes, collapsedNodes, groupByCountry = false) {
 
   const hierarchyData = { id: root.id, children: buildChildren(root.id) };
   const rootNode = d3.hierarchy(hierarchyData);
-  const treeLayout = d3.tree().nodeSize([230, groupByCountry ? 110 : 140]);
+  const treeLayout = d3.tree().nodeSize([240, 10]); // Y will be rewritten below
   treeLayout(rootNode);
+
+  // Re-compute Y by depth, using actual node heights + gaps.
+  // Group/pill nodes are 36px, person nodes are 82px.
+  const isGroup = (id) => countryGroupIds.has(id) || deptGroupIds.has(id);
+  const heightFor = (id) => isGroup(id) ? 36 : 82;
+  const GAP = 48;
+
+  // Gather nodes by depth
+  const byDepth = [];
+  rootNode.each(d => {
+    if (!byDepth[d.depth]) byDepth[d.depth] = [];
+    byDepth[d.depth].push(d);
+  });
+  // Compute cumulative Y for each depth: top = prevTop + maxHeightOfPrev + GAP
+  const depthTopY = [0];
+  for (let depth = 1; depth < byDepth.length; depth++) {
+    const prevMax = Math.max(...byDepth[depth - 1].map(d => heightFor(d.data.id)));
+    depthTopY[depth] = depthTopY[depth - 1] + prevMax + GAP;
+  }
+  rootNode.each(d => { d.y = depthTopY[d.depth]; });
 
   const positions = {};
   const links = [];
@@ -946,8 +966,8 @@ function OrgChart({ state, dispatch }) {
             const isTargetCountryGroup = countryGroupIds.has(l.target);
             const isSourceDeptGroup = deptGroupIds.has(l.source);
             const isTargetDeptGroup = deptGroupIds.has(l.target);
-            const isGroupNode = isSourceCountryGroup || isSourceDeptGroup;
-            const sy = l.sy + offsetY + (isGroupNode ? 36 : 82);
+            const isSourceGroup = isSourceCountryGroup || isSourceDeptGroup;
+            const sy = l.sy + offsetY + (isSourceGroup ? 36 : 82);
             const tx = l.tx + offsetX;
             const ty = l.ty + offsetY;
             const my = (sy + ty) / 2;
