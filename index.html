@@ -416,6 +416,22 @@ function reducer(state, action) {
       };
     }
 
+    case 'DUPLICATE_NODE': {
+      const src = activeScen().nodes[action.id];
+      if (!src) return state;
+      const id = uid();
+      const suffix = ' (Dual Role)';
+      return updateActiveNodes(nodes => ({
+        ...nodes,
+        [id]: {
+          ...src, id,
+          name: src.name ? `${src.name}${suffix}` : src.name,
+          title: src.title ? `${src.title} — 2nd role` : src.title,
+          parentId: src.parentId,
+        }
+      }));
+    }
+
     case 'UPDATE_NODE':
       return updateActiveNodes(nodes => ({
         ...nodes, [action.id]: { ...nodes[action.id], ...action.data }
@@ -849,6 +865,8 @@ function OrgNode({ node, pos, state, dispatch, allNodes }) {
                   onClick={(e) => { e.stopPropagation(); dispatch({ type: 'ADD_NODE', parentId: node.id }); }}>+</button>
           <button className="node-action-btn" title="Edit"
                   onClick={(e) => { e.stopPropagation(); dispatch({ type: 'SET_EDITING', id: node.id }); }}>&#9998;</button>
+          <button className="node-action-btn" title="Duplicate (dual role)"
+                  onClick={(e) => { e.stopPropagation(); dispatch({ type: 'DUPLICATE_NODE', id: node.id }); }}>&#x29C9;</button>
           {node.parentId && <button className="node-action-btn danger" title="Delete"
                   onClick={handleDelete}>&#x2715;</button>}
         </div>
